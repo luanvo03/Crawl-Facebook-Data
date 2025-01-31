@@ -8,23 +8,161 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from selenium.webdriver.common.action_chains import ActionChains
 from bs4 import BeautifulSoup
 from time import sleep
 import os
 import requests
-from selenium.webdriver.common.keys import Keys
 import keyboard
 import re
 import time
 import random
 from functools import wraps
-from .config import login, login_mobile  # Import login functions
-from yt_dlp import YoutubeDL
-import yt_dlp
 
 # Add new utility functions at the top
+class TimeoutManager:
+    """Context manager for handling timeouts"""
+    def __init__(self, timeout, operation_name="Operation"):
+        self.timeout = timeout
+        self.start_time = None
+        self.operation_name = operation_name
+        
+    def __enter__(self):
+        self.start_time = time.time()
+        return self
+        
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is TimeoutException:
+            elapsed = time.time() - self.start_time
+            print(f"⚠️ {self.operation_name} timed out after {elapsed:.1f}s")
+            return True
+            
+    def check_timeout(self):
+        """Check if operation has exceeded timeout"""
+        if time.time() - self.start_time > self.timeout:
+            raise TimeoutException(
+                f"{self.operation_name} exceeded {self.timeout}s limit"
+            )
+            
+    def get_elapsed(self):
+        """Get elapsed time in seconds"""
+        return time.time() - self.start_time
+
+# Usage example:
+def get_comments_safe(browser, timeout=30):
+    """Get comments with timeout handling"""
+    comments = []
+    seen = set()
+    
+    with TimeoutManager(timeout, "Comment Loading") as tm:
+        try:
+            while True:
+                # Process comments
+                elements = browser.find_elements(By.XPATH, 
+                    "//div[contains(@class, 'x1n2onr6')]//div[contains(@class, '_14ye')]"
+                )
+                
+                for element in elements:
+                    try:
+                        text = element.text.strip()
+                        if text and text not in seen:
+                            seen.add(text)
+                            comments.append(text)
+                    except:
+                        continue
+                        
+                # Check timeout
+                tm.check_timeout()
+                
+                # Try loading more
+                try:
+                    click_view_more_comments(browser)
+                    smart_delay(0.5, 1)
+                except:
+                    break
+                    
+        except TimeoutException:
+            pass  # Handled by context manager
+        except Exception as e:
+            print(f"Error getting comments: {e}")
+            
+    return comments
+
+def extract_facebook_post_id(url):
+    """
+    Extracts the post ID from a Facebook post URL.
+
+    Args:
+        url: The Facebook post URL.
+
+    Returns:
+        The post ID, or None if no ID could be found.
+    """
+    try:
+        # Clean URL
+        url = url.split('?')[0].rstrip('/')
+        
+        # Extract ID using regex
+        match = re.search(r"(?:reel/|posts/|videos/|pfbid)([\w\d]+)", url)
+        if match:
+            return match.group(1)
+            
+        return None
+        
+    except Exception as e:
+        print(f"Error extracting ID from {url}: {e}")
+        return None
+
+def get_comments_safe(browser, timeout=30):
+    """Get comments with timeout and error handling"""
+    comments = []
+    seen_comments = set()
+    
+    with TimeoutManager(timeout) as tm:
+        try:
+            while True:
+                elements = browser.find_elements(By.XPATH, 
+                    "//div[contains(@class, 'x1n2onr6')]//div[contains(@class, '_14ye')]"
+                )
+                
+                for element in elements:
+                    try:
+                        text = element.text.strip()
+                        if text and text not in seen_comments:
+                            seen_comments.add(text)
+                            comments.append(text)
+                    except:
+                        continue
+                        
+                tm.check_timeout()
+                
+                try:
+                    click_view_more_comments(browser)
+                    smart_delay(0.5, 1)
+                except:
+                    break
+                    
+        except TimeoutException:
+            print("Comment loading timed out")
+        except Exception as e:
+            print(f"Error getting comments: {e}")
+            
+    return comments
+
+def save_text(text_list, filepath):
+    """Save text with proper encoding"""
+    if not text_list:
+        return
+        
+    try:
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        with open(filepath, 'w', encoding='utf-8') as f:
+            for text in text_list:
+                f.write(f"{text}\n")
+    except Exception as e:
+        print(f"Error saving text to {filepath}: {e}")
+
 def smart_delay(min_delay=1, max_delay=3):
     """Smart random delay with noise"""
     base_delay = random.uniform(min_delay, max_delay)
@@ -177,61 +315,70 @@ def process_desktop_content(browser, folder, is_video=False):
         browser.execute_script(f"window.scrollTo(0, {original_position});")
 
 @retry_on_failure(retries=3)
-def process_mobile_video(browser_mobile, url, folder, use_ytdl=False):
+def process_mobile_video(browser_mobile, url, folder):
     """Process mobile-only content (video download and comments)"""
     print("\n→ Processing mobile content...")
     try:
-        if use_ytdl and download_video_ytdl(url, folder):
-            # Try to get comments after successful video download
-            try:
-                comments = get_comments_mobile(browser_mobile)
-                if comments:
-                    save_text(comments, f"{folder}/comments.txt")
-                    print("✓ Comments saved")
-            except:
-                print("⚠️ Could not get comments")
-            return True
-            
-        smart_delay(5, 6)
-        browser_mobile.get(url.replace('www.facebook.com', 'm.facebook.com'))
-        smart_delay(5, 6)
+        # Convert to mobile URL and load
+        mobile_url = url.replace('www.facebook.com', 'm.facebook.com')
+        smart_delay(2, 3)
+        browser_mobile.get(mobile_url)
+        smart_delay(2, 3)
         
         if not wait_for_mobile_video_load(browser_mobile):
+            print("⚠️ Video failed to load")
             return False
             
         video_urls = get_video_urls(browser_mobile)
         if video_urls:
             download_videos(video_urls, folder)
-            # Try to get comments after video download
+            
+            # Try to get comments
             try:
                 comments = get_comments_mobile(browser_mobile)
                 if comments:
                     save_text(comments, f"{folder}/comments.txt")
                     print("✓ Comments saved")
-            except:
-                print("⚠️ Could not get comments")
+            except Exception as e:
+                print(f"⚠️ Could not get comments: {e}")
             return True
         
         print("❌ No video URLs found")
         return False
+        
     except Exception as e:
         print(f"❌ Error processing mobile content: {e}")
         return False
 
 def get_comments_mobile(browser):
-    """Get comments from mobile view"""
+    """Get comments from mobile view - content only"""
     comments_list = []
+    seen_comments = set()
+    
     try:
         # Find comment elements in mobile view
-        comment_elements = browser.find_elements(By.XPATH, 
+        elements = browser.find_elements(By.XPATH, 
             "//div[contains(@class, '_2b04')]//div[contains(@class, '_14ye')]"
         )
         
-        for comment in comment_elements:
+        for element in elements:
             try:
-                text = comment.text.strip()
-                if text and text not in comments_list:
-                    comments_list.append(text)
+                text = element.text.strip()
+                if not text:
+                    continue
+                    
+                # Split into lines and get content only
+                lines = text.split('\n')
+                if len(lines) > 1:
+                    content = '\n'.join(lines[1:])
+                else:
+                    content = text
+                    
+                # Clean and deduplicate
+                cleaned = clean_comment_text(content)
+                if cleaned and not is_ui_text(cleaned) and cleaned not in seen_comments:
+                    seen_comments.add(cleaned)
+                    comments_list.append(cleaned)
             except:
                 continue
                 
@@ -334,56 +481,123 @@ def get_comments_with_retry(browser):
             print("  ⚠️ Could not access comments section")
             return []
             
-        # Try to click 'See all comments' if present
+        # Show all comments instead of most relevant
         try:
+            print("  → Switching to 'All comments' view...")
             show_all_comments(browser)
             smart_delay(1, 2)
-        except:
-            pass
+        except Exception as e:
+            print(f"  ⚠️ Could not switch to all comments: {e}")
             
-        # Load more comments
-        comments_loaded = 0
-        no_new_comments = 0
-        max_attempts = 3
-        
-        while no_new_comments < max_attempts:
-            previous_count = len(browser.find_elements(By.XPATH, "//div[@role='article']//div[contains(@class, 'x1n2onr6')]"))
+        # Get comments with new scrolling logic
+        comments = get_comments(browser)
+        if comments:
+            print(f"  ✓ Found {len(comments)} comments")
+            return comments
             
-            try:
-                click_view_more_comments(browser)
-                smart_delay(1, 2)
-                
-                current_count = len(browser.find_elements(By.XPATH, "//div[@role='article']//div[contains(@class, 'x1n2onr6')]"))
-                
-                if current_count > previous_count:
-                    comments_loaded += (current_count - previous_count)
-                    no_new_comments = 0
-                    print(f"  → Loaded {comments_loaded} comments...", end="\r")
-                else:
-                    no_new_comments += 1
-                    
-            except:
-                no_new_comments += 1
-                
-        print(f"  ✓ Found {comments_loaded} comments total")
-        return get_comments(browser)
+        return []
         
     except Exception as e:
         print(f"  ❌ Error getting comments: {e}")
         return []
 
 def show_all_comments(driver):
-    '''Change Most relevant to All comments to show all comments'''
+    """Change Most relevant to All comments"""
+    try:
+        # Click on the Most relevant button
+        print("    → Looking for sort button...")
+        view_more_btn = WebDriverWait(driver, 15).until(
+            EC.element_to_be_clickable((By.XPATH, "//span[contains(text(), 'Most relevant')]"))
+        )
+        view_more_btn.click()
+        smart_delay(0.5, 1)
+        
+        # Click on the All comments button
+        all_comments = WebDriverWait(driver, 15).until(
+            EC.element_to_be_clickable((By.XPATH, "//span[contains(text(), 'All comments')]"))
+        )
+        all_comments.click()
+        smart_delay(1, 2)
+        
+        print("    ✓ Switched to 'All comments' view")
+        return True
+    except Exception as e:
+        print(f"    ⚠️ Error switching comment view: {e}")
+        return False
 
-    # Click on the Most relevant button
-    view_more_btn = WebDriverWait(driver, 15).until(EC.element_to_be_clickable((By.XPATH, "//span[contains(text(), 'Most relevant')]")))
-    view_more_btn.click()
-    # Click on the All comment button
-    all_comments = WebDriverWait(driver, 15).until(EC.element_to_be_clickable((By.XPATH, "//span[contains(text(), 'All comments')]")))
-    all_comments.click()
-    # Scroll to the bottom, ensure all comments are loaded
-    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-    return None
+def get_comments(driver):
+    """Get all comments under a post with infinite scroll handling"""
+    comments_list = []
+    last_comment_count = 0
+    retry_count = 0
+    max_retries = 3
+    
+    try:
+        print("    → Loading all comments...")
+        while retry_count < max_retries:
+            # Find all comment elements
+            comments = driver.find_elements(
+                By.XPATH, 
+                "//div[contains(@class, 'x1n2onr6 x1ye3gou x1iorvi4 x78zum5 x1q0g3np x1a2a7pz') or contains(@class, 'x1n2onr6 xurb0ha x1iorvi4 x78zum5 x1q0g3np x1a2a7pz')]"
+            )
+            
+            # Scroll to last comment
+            if comments:
+                driver.execute_script("arguments[0].scrollIntoView(true);", comments[-1])
+                smart_delay(2, 3)  # Wait for load
+                
+                # Check if new comments loaded
+                if len(comments) == last_comment_count:
+                    retry_count += 1
+                else:
+                    retry_count = 0
+                    last_comment_count = len(comments)
+                    print(f"\r      → Found {len(comments)} comments...", end="")
+            else:
+                break
+                
+        print("\n    → Processing comments...")
+        
+        # Click all "See more" buttons
+        try:
+            see_more_buttons = driver.find_elements(
+                By.XPATH,
+                "//div[@role='button' and contains(@class, 'x11i0hfl')]"
+            )
+            
+            for button in see_more_buttons:
+                try:
+                    if "See more" in button.text:
+                        ActionChains(driver).move_to_element(button).click().perform()
+                        smart_delay(0.5, 1)
+                except:
+                    continue
+        except:
+            pass
+            
+        # Extract comment text
+        for comment in comments:
+            try:
+                text_ele = comment.find_element(
+                    By.XPATH,
+                    ".//div[contains(@class, 'xdj266r x11i5rnm xat24cr x1mh8g0r x1vvkbs')]"
+                )
+                if text_ele:
+                    # Get only comment content, skip first line (username)
+                    text = text_ele.text
+                    lines = text.split('\n')
+                    if len(lines) > 1:
+                        comment_text = '\n'.join(lines[1:])
+                        if comment_text.strip():
+                            comments_list.append(comment_text.strip())
+            except:
+                continue
+                
+        return comments_list
+        
+    except Exception as e:
+        print(f"    ❌ Error getting comments: {e}")
+        return comments_list
 
 def click_see_more(driver, max_retries=3):
     """Click see more with improved reliability"""
@@ -617,7 +831,7 @@ def wait_for_comments_load(driver, timeout=10):
         return False
 
 def get_comments(driver, controlled_scroll=False):
-    """Get comments with memory-optimized deduplication"""
+    """Get comments with memory-optimized deduplication - content only"""
     seen_comments = set()  # Use set for O(1) lookups
     retry_count = 0
     max_retries = 3
@@ -625,14 +839,25 @@ def get_comments(driver, controlled_scroll=False):
     max_no_new = 3
     
     def is_valid_comment(text):
-        """Check if comment is valid and not seen before"""
+        """Check if comment is valid and extract only content"""
         if not text or text.isspace():
             return False
-        cleaned = clean_comment_text(text)
+            
+        # Split into lines and process
+        lines = text.split('\n')
+        # Remove first line (usually contains username)
+        if len(lines) > 1:
+            content = '\n'.join(lines[1:])
+        else:
+            content = text
+            
+        # Clean the content
+        cleaned = clean_comment_text(content)
         if not cleaned or is_ui_text(cleaned):
             return False
         if cleaned in seen_comments:
             return False
+            
         seen_comments.add(cleaned)
         return True
 
@@ -647,23 +872,18 @@ def get_comments(driver, controlled_scroll=False):
                 # Get comments count before loading more
                 previous_count = len(seen_comments)
                 
-                # Optimized comment selectors
-                selectors = [
-                    "//div[contains(@class, 'x1y1aw1k')]//div[@dir='auto']",
-                    "//div[@role='article']//div[contains(@class, 'xdj266r')]",
-                    "//div[contains(@class, '_7a9a')]"
-                ]
-                
                 # Process comments in batches
-                for selector in selectors:
-                    elements = driver.find_elements(By.XPATH, selector)
-                    for element in elements:
-                        try:
-                            text = element.text.strip()
-                            if is_valid_comment(text):
-                                continue
-                        except:
-                            continue
+                elements = driver.find_elements(
+                    By.XPATH,
+                    "//div[@role='article']//div[contains(@class, 'x1y1aw1k')]//div[@dir='auto']"
+                )
+                
+                for element in elements:
+                    try:
+                        text = element.text.strip()
+                        is_valid_comment(text)  # Will add to seen_comments if valid
+                    except:
+                        continue
                 
                 # Check if we found new comments
                 if len(seen_comments) == previous_count:
@@ -821,7 +1041,7 @@ def get_emojis(driver):
         A list of all emojis of the Facebook post's caption
     """
     # Find the caption element
-    caption_elements = driver.find_elements(By.XPATH, "//div[contains(@class, 'xdj266r x11i5rnm xat24cr x1mh8g0r x1vvkbs x126k92a') or contains(@class, 'x11i5rnm xat24cr x1mh8g0r x1vvkbs xtlvy1s x126k92a')]")
+    caption_elements = driver.find_elements(By.XPATH, "//div[contains(@class, 'xdj266r x11i5rnm xat24cr x1mh8g0r x1vvkbs x126k92a') or contains(@class, 'x11i5rnm xat24cr x1mh8g0r x1vvkbs x126k92a')]")
 
     # Get all lines and emojis, handling <br> tags for line breaks
     lines_and_emojis = []
@@ -1094,287 +1314,30 @@ def download_videos(video_urls, download_dir="videos"):
         except requests.exceptions.RequestException as e:
             print(f"  ❌ Error downloading video {i+1}: {e}")
 
-def download_video_ytdl(url, download_dir):
-    """Download video using yt-dlp"""
-    try:
-        print("  → Downloading video using yt-dlp...")
-        ydl_opts = {
-            'format': 'best',  # Download best quality
-            'outtmpl': f'{download_dir}/video_%(id)s.%(ext)s',
-            'quiet': True,
-            'no_warnings': True,
-        }
-        
-        with YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-        print("  ✓ Video download complete")
-        return True
-    except Exception as e:
-        print(f"  ❌ Error downloading with yt-dlp: {e}")
+def is_valid_facebook_post(url, page_username=None):
+    """Check if URL is a valid Facebook post after redirection and belongs to the correct page"""
+    if not url:
         return False
-
-def get_post_links(driver, fanpage_url, scroll_limit=0):
-    """
-    Crawls a Facebook fanpage and extracts post links.
-    """
-    post_urls = []
-    scroll_count = 0
-    last_height = 0
-    no_new_content_count = 0
-    consecutive_same_count = 0
-    last_post_count = 0
-    
-    try:
-        driver.get(fanpage_url)
-        sleep(3)
         
-        while True:
-            try:
-                # Manual interrupt check
-                if keyboard.is_pressed("enter"):
-                    print("\nStopping the scrolling (manual interrupt).")
-                    break
-
-                # Extract links before scrolling
-                try:
-                    link_post_elements = driver.find_elements(
-                        By.CSS_SELECTOR, 
-                        "a[href*='/posts/'], a[href*='/videos/'], a[href*='/reel/']"
-                    )
-                    for link in link_post_elements:
-                        url = link.get_attribute("href")
-                        if url and url not in post_urls:
-                            post_urls.append(url)
-                except Exception:
-                    pass
-
-                # Scroll operation
-                scroll_distance = random.randint(300, 700)
-                driver.execute_script(f"window.scrollBy(0, {scroll_distance});")
-                smart_delay(0.5, 1.5)
-                
-                scroll_count += 1
-                
-                # Check conditions based on scroll_limit
-                if scroll_limit > 0:
-                    # If limit is set, only check if we've reached it
-                    if scroll_count >= scroll_limit:
-                        print(f"\nReached scroll limit of {scroll_limit}")
-                        break
-                else:
-                    # Only check for end of content if no limit is set
-                    current_height = driver.execute_script("return document.documentElement.scrollHeight")
-                    if len(post_urls) == last_post_count:
-                        consecutive_same_count += 1
-                    else:
-                        consecutive_same_count = 0
-                        last_post_count = len(post_urls)
-
-                    if current_height == last_height:
-                        no_new_content_count += 1
-                        if no_new_content_count >= 5 and consecutive_same_count >= 5:
-                            print("\nReached end of page (no new content)")
-                            break
-                    else:
-                        no_new_content_count = 0
-                        last_height = current_height
-
-                # Progress update
-                if scroll_count % 5 == 0:
-                    print(f"\rScrolls: {scroll_count}, Posts found: {len(post_urls)}", end="")
-
-            except Exception as e:
-                print(f"\nError during scrolling: {e}")
-                sleep(2)
-                continue
-
-        post_urls = remove_duplicate_links(post_urls)
-        print(f"\nTotal unique posts found: {len(post_urls)}")
-        return post_urls
-
-    except TimeoutException:
-        print("Timed out waiting for the page to load.")
-        return None
-    except Exception as e:
-        print(f"An error occurred: {e}")
-        return None
-
-def clean_comment_text(text):
-    """Clean Facebook comment text with improved UI element removal"""
-    if not text:
-        return ""
-        
-    # Remove UI elements
-    ui_elements = {
-        'Follow': '',
-        'Like': '',
-        'Write a comment…': '',
-        'Comment': '',
-        'Share': '',
-        'Reply': '',
-        'See translation': '',
-        'Most relevant': '',
-        'All comments': '',
-        'Previous comments': '',
-        'View more comments': '',
-        'View previous comments': '',
-        'See more': '',
-        '· Follow': '',
-        '· Share': '',
-        '· Reply': ''
-    }
+    # First check if URL matches the page
+    if page_username and page_username not in url:
+        return False
     
-    cleaned_text = text
-    for ui_text, replacement in ui_elements.items():
-        cleaned_text = cleaned_text.replace(ui_text, replacement)
+    # List of valid Facebook URL patterns
+    valid_patterns = [
+        r'facebook\.com/[^/]+/posts/',
+        r'facebook\.com/[^/]+/videos/',
+        r'facebook\.com/[^/]+/photos/',
+        r'facebook\.com/photo/',
+        r'facebook\.com/watch/?\?v=',
+        r'facebook\.com/reel/',
+        r'facebook\.com/[^/]+/permalink/',
+        r'facebook\.com/story\.php'
+    ]
     
-    # Remove timestamps
-    cleaned_text = re.sub(r'\b\d+[dwmy]\b', '', cleaned_text)
-    
-    # Remove "Reply to..." lines
-    cleaned_text = re.sub(r'^Reply to.*?\n?', '', cleaned_text, flags=re.MULTILINE)
-    
-    # Clean up whitespace
-    cleaned_text = re.sub(r'\s+', ' ', cleaned_text)
-    cleaned_text = re.sub(r'^\s+|\s+$', '', cleaned_text, flags=re.MULTILINE)
-    
-    # Remove empty lines
-    cleaned_text = '\n'.join(line for line in cleaned_text.splitlines() if line.strip())
-    
-    return cleaned_text.strip()
+    return any(re.search(pattern, url) for pattern in valid_patterns)
 
-def save_text(text_list, file_path):
-    """Memory-efficient text saving with deduplication"""
-    if not text_list:
-        return
-        
-    try:
-        # Process in chunks to save memory
-        chunk_size = 1000
-        seen = set()
-        
-        with open(file_path, "w", encoding="utf-8") as file:
-            for i in range(0, len(text_list), chunk_size):
-                chunk = text_list[i:i + chunk_size]
-                
-                # Process chunk
-                for text in chunk:
-                    if "comments.txt" in file_path:
-                        cleaned = clean_comment_text(text)
-                    else:
-                        cleaned = text.strip()
-                        
-                    # Check for duplicates
-                    if cleaned and not cleaned.isspace() and cleaned not in seen:
-                        seen.add(cleaned)
-                        file.write(cleaned + "\n")
-                        
-                # Clear chunk from memory
-                del chunk
-                
-        # Clear sets
-        seen.clear()
-        
-    except Exception as e:
-        print(f"Error saving text: {e}")
-
-def extract_facebook_post_id(url):
-    """
-    Extracts the post ID from a Facebook post URL.
-
-    Args:
-        url: The Facebook post URL.
-
-    Returns:
-        The post ID, or None if no ID could be found.
-    """
-    match = re.search(r"(?:reel/|posts/|videos/|pfbid)([\w\d]+)", url)
-    if match:
-        return match.group(1)
-    return None
-
-def remove_duplicate_links(links):
-    """
-    Remove links with duplicate IDs and keep only one for each unique ID.
-    """
-    unique_links = {}
-    for link in links:
-        post_id = extract_facebook_post_id(link)
-        if post_id and post_id not in unique_links:
-            unique_links[post_id] = link
-    return list(unique_links.values())
-
-def initialize_browsers(driver_path, cookies_path, headless=True):
-    """Initialize both regular and mobile browsers"""
-    try:
-        # Initialize regular browser
-        print("\n=== Initializing Browsers ===")
-        print("→ Starting regular browser...")
-        browser = login(driver_path, cookies_path, headless)
-        if not browser:
-            raise Exception("❌ Failed to initialize regular browser")
-        print("✓ Regular browser initialized successfully")
-        
-        # Initialize mobile browser
-        print("\n→ Starting mobile browser...")
-        browser_mobile = login_mobile(driver_path, cookies_path, headless)
-        if not browser_mobile:
-            browser.quit()
-            raise Exception("❌ Failed to initialize mobile browser")
-        print("✓ Mobile browser initialized successfully")
-        print("=== Browser Setup Complete ===\n")
-            
-        return browser, browser_mobile
-        
-    except Exception as e:
-        print(f"\n❌ Error initializing browsers: {e}")
-        if 'browser' in locals() and browser:
-            browser.quit()
-        if 'browser_mobile' in locals() and browser_mobile:
-            browser_mobile.quit()
-        return None, None
-
-def wait_for_mobile_video_load(browser, max_retries=3):
-    """Wait for video content to load in mobile view with better debugging"""
-    print("\n→ Checking video content...")
-    for attempt in range(max_retries):
-        try:
-            print(f"  Attempt {attempt + 1}/{max_retries}")
-            
-            WebDriverWait(browser, 10).until(
-                lambda d: d.execute_script('return document.readyState') == 'complete'
-            )
-            
-            selectors = [
-                "//div[contains(@class, 'story_body_container')]//video",
-                "//div[contains(@class, '_53mw')]//video",
-                "//video[@src]",
-                "//div[contains(@class, 'video-player')]//video"
-            ]
-            
-            for selector in selectors:
-                try:
-                    WebDriverWait(browser, 5).until(
-                        EC.presence_of_element_located((By.XPATH, selector))
-                    )
-                    print("  ✓ Video element found")
-                    return True
-                except:
-                    continue
-                    
-            print(f"  ⚠️ No video found in attempt {attempt + 1}")
-            browser.refresh()
-            smart_delay(2, 3)
-            
-        except Exception as e:
-            print(f"  ❌ Error: {e}")
-            if attempt < max_retries - 1:
-                browser.refresh()
-                smart_delay(2, 3)
-    
-    return False
-
-def process_post(browser, browser_mobile, url, folder, use_ytdl=False):
+def process_post(browser, browser_mobile, url, folder, page_username=None, use_ytdl=False):
     """Process a single post based on its type"""
     try:
         print(f"\n=== Processing Post: {url} ===")
@@ -1384,13 +1347,14 @@ def process_post(browser, browser_mobile, url, folder, use_ytdl=False):
         
         # Get current URL and check if it's a valid Facebook post
         current_url = browser.current_url
-        if not is_valid_facebook_post(current_url):
+        if not is_valid_facebook_post(current_url, page_username):
             print("❌ Invalid post URL after redirect")
             print(f"  Redirected to: {current_url}")
+            print(f"  Expected page: {page_username}")
             return False
             
         print("✓ URL validation successful")
-            
+        
         # Check if the post contains video content
         try:
             print("→ Checking for video content...")
@@ -1428,63 +1392,145 @@ def process_post(browser, browser_mobile, url, folder, use_ytdl=False):
         print(f"  Folder: {folder}")
         return False
 
-def is_valid_facebook_post(url):
-    """Check if URL is a valid Facebook post after redirection"""
-    if not url:
-        return False
+def get_post_links(driver, fanpage_url, max_scroll=1000, min_posts=100):
+    """
+    Crawls Facebook page posts with improved visibility and scrolling.
     
-    # List of valid Facebook URL patterns
-    valid_patterns = [
-        r'facebook\.com/[^/]+/posts/',
-        r'facebook\.com/[^/]+/videos/',
-        r'facebook\.com/[^/]+/photos/',
-        r'facebook\.com/photo/',
-        r'facebook\.com/watch/?\?v=',
-        r'facebook\.com/reel/',
-        r'facebook\.com/[^/]+/permalink/',
-        r'facebook\.com/story\.php'
-    ]
+    Args:
+        driver: Selenium WebDriver instance
+        fanpage_url: Facebook page URL to crawl
+        max_scroll: Maximum number of scrolls (default: 1000)
+        min_posts: Minimum number of posts to collect (default: 100)
+    """
+    post_urls = []
+    scroll_count = 0
+    last_height = 0
+    no_new_content_count = 0
+    page_username = fanpage_url.rstrip('/').split('/')[-1]
     
-    return any(re.search(pattern, url) for pattern in valid_patterns)
-
-class TimeoutManager:
-    """Context manager for handling timeouts"""
-    def __init__(self, timeout):
-        self.timeout = timeout
+    print(f"\n=== Starting Page Crawl ===")
+    print(f"Page: {page_username}")
+    print(f"Target: {min_posts} posts minimum")
+    
+    try:
+        driver.get(fanpage_url)
+        sleep(3)  # Initial load
         
-    def __enter__(self):
-        self.start_time = time.time()
-        return self
+        # Adjust zoom to see more content
+        driver.execute_script("document.body.style.zoom = '50%'")
+        sleep(1)
         
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if time.time() - self.start_time > self.timeout:
-            raise TimeoutException("Operation timed out")
-        return False
-
-def get_comments_safe(browser, max_attempts=3):
-    """Get comments with safety checks"""
-    for attempt in range(max_attempts):
-        try:
-            # Try to find the comments section without scrolling
-            comments_section = WebDriverWait(browser, 5).until(
-                EC.presence_of_element_located((By.XPATH, "//div[@role='article']"))
-            )
-            
-            # Only proceed if comments section is visible
-            if comments_section.is_displayed():
-                return get_comments(browser, controlled_scroll=True)
-            else:
-                print("⚠️ Comments section not visible")
-                return []
+        while scroll_count < max_scroll and no_new_content_count < 3:
+            try:
+                # Check for manual stop
+                if keyboard.is_pressed("enter"):
+                    print("\n⚠️ Manual interrupt detected")
+                    break
                 
-        except TimeoutException:
-            if attempt == max_attempts - 1:
-                print("⚠️ Comments section not found")
-                return []
-            smart_delay(1, 2)
-        except Exception as e:
-            if attempt == max_attempts - 1:
-                print(f"⚠️ Error getting comments: {e}")
-                return []
-            smart_delay(1, 2)
-    return []
+                # Get current post count
+                prev_count = len(post_urls)
+                
+                # Collect visible post links
+                elements = driver.find_elements(
+                    By.CSS_SELECTOR, 
+                    "a[href*='/posts/'], a[href*='/videos/'], a[href*='/reel/']"
+                )
+                
+                # Add valid URLs
+                for element in elements:
+                    url = element.get_attribute("href")
+                    if url and url not in post_urls and page_username in url:
+                        post_urls.append(url)
+                
+                # Smart scrolling
+                current_height = driver.execute_script("return document.documentElement.scrollHeight")
+                if current_height == last_height:
+                    no_new_content_count += 1
+                else:
+                    no_new_content_count = 0
+                    last_height = current_height
+                
+                # Scroll with randomization
+                scroll_amount = random.randint(300, 1000)  # Varied scroll distance
+                driver.execute_script(f"window.scrollBy(0, {scroll_amount});")
+                sleep(random.uniform(0.5, 1.0))  # Random delay
+                
+                # Progress update
+                scroll_count += 1
+                if scroll_count % 10 == 0:
+                    new_posts = len(post_urls) - prev_count
+                    print(f"\rScrolls: {scroll_count}, Posts: {len(post_urls)}, "
+                          f"New: +{new_posts}", end="")
+                    
+                    # Page refresh if stuck
+                    if scroll_count % 200 == 0:
+                        print("\n↻ Refreshing page...")
+                        driver.refresh()
+                        sleep(3)
+                        driver.execute_script("document.body.style.zoom = '50%'")
+                        sleep(1)
+                
+                # Check if we have enough posts
+                if len(post_urls) >= min_posts:
+                    print(f"\n✓ Minimum post target ({min_posts}) reached")
+                    break
+                
+            except Exception as e:
+                print(f"\n⚠️ Scroll error: {e}")
+                sleep(2)
+                continue
+        
+        # Reset zoom
+        driver.execute_script("document.body.style.zoom = '100%'")
+        
+        # Remove duplicates and validate
+        final_urls = remove_duplicate_links(post_urls)
+        print(f"\n=== Crawl Complete ===")
+        print(f"Posts found: {len(final_urls)}")
+        return final_urls
+        
+    except Exception as e:
+        print(f"\n❌ Critical error: {e}")
+        return remove_duplicate_links(post_urls)
+
+def remove_duplicate_links(links):
+    """Remove duplicate links and validate page-specific links"""
+    if not links:
+        return []
+        
+    unique_links = []
+    seen_ids = set()
+    
+    try:
+        # Get page username from first link to validate others
+        page_username = links[0].split('/')[3] if links else None
+        
+        for link in links:
+            try:
+                # Extract post ID from URL
+                post_id = None
+                
+                # Check different URL patterns
+                if '/posts/' in link:
+                    post_id = link.split('/posts/')[-1].split('/')[0]
+                elif '/videos/' in link:
+                    post_id = link.split('/videos/')[-1].split('/')[0]
+                elif '/reel/' in link:
+                    post_id = link.split('/reel/')[-1].split('/')[0]
+                elif 'pfbid' in link:
+                    post_id = link.split('pfbid')[-1].split('/')[0]
+                
+                # Validate link belongs to same page and isn't duplicate
+                if (post_id and post_id not in seen_ids and 
+                    page_username and page_username in link):
+                    seen_ids.add(post_id)
+                    unique_links.append(link)
+                    
+            except:
+                continue
+                
+        return unique_links
+        
+    except Exception as e:
+        print(f"Error removing duplicates: {e}")
+        return list(set(links))  # Fallback to simple deduplication

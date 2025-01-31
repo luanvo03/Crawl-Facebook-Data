@@ -3,35 +3,45 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 import pickle
 from time import sleep
+from configuration.secure_config import SecureConfig
 
-# Use the Service object to specify the path to chromedriver
-service = Service(executable_path="./chromedriver.exe")
-# or, for automatic finding of the driver :
-# service = Service()
+def save_facebook_cookies(driver_path="./chromedriver.exe"):
+    try:
+        # Initialize secure config
+        config = SecureConfig()
+        credentials = config.get_credentials()
+        
+        # Setup Chrome driver
+        service = Service(executable_path=driver_path)
+        browser = webdriver.Chrome(service=service)
+        
+        # Open Facebook
+        browser.get('https://www.facebook.com/')
+        sleep(3)
+        
+        # Enter login information securely
+        user = browser.find_element(By.ID, "email")
+        user.send_keys(credentials['email'])
+        
+        password = browser.find_element(By.ID, "pass")
+        password.send_keys(credentials['password'])
+        
+        # Login
+        login_button = browser.find_element(By.NAME, "login")
+        login_button.click()
+        
+        # Wait for login to complete
+        sleep(20)
+        
+        # Save cookies
+        cookies_file = "my_cookies.pkl"
+        pickle.dump(browser.get_cookies(), open(cookies_file, "wb"))
+        print(f"✓ Cookies saved successfully to {cookies_file}")
+        
+    except Exception as e:
+        print(f"❌ Error saving cookies: {str(e)}")
+    finally:
+        browser.quit()
 
-# Pass the Service object to the webdriver
-browser = webdriver.Chrome(service=service)
-
-### Log in to Facebook
-# Open facebook website
-browser.get('https://www.facebook.com/')
-
-# Stop the program in 5 seconds
-sleep(5)
-
-# Enter the login information
-user = browser.find_element(By.ID, "email")
-user.send_keys("823579924940@1secmail.com") # enter your email
-
-password = browser.find_element(By.ID, "pass")
-password.send_keys("swArAhb36") # enter your password
-
-# Login
-login_button = browser.find_element(By.NAME, "login")
-login_button.click()
-
-sleep(25)
-
-pickle.dump(browser.get_cookies(), open("my_cookies.pkl", "wb"))
-
-browser.close()
+if __name__ == "__main__":
+    save_facebook_cookies()
