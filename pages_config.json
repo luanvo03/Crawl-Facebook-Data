@@ -1,42 +1,16 @@
 {
   "pages": [
     {
-      "name": "cakebyvpbank",
-      "url": "https://www.facebook.com/cake.themobilebank",
-      "max_scroll": 500,
+      "name": "tpxanhecopark",
+      "url": "https://www.facebook.com/ecopark.com.vn",
+      "max_scroll": 750,
       "min_posts": 100
     },
     {
-      "name": "pvcombank",
-      "url": "https://www.facebook.com/PVcomBankFanpage",
-      "max_scroll": 500,
+      "name": "vingroup",
+      "url": "https://www.facebook.com/vingroup.net",
+      "max_scroll": 750,
       "min_posts": 100
-    },
-    {
-      "name": "liobank",
-      "url": "https://www.facebook.com/liobank.vn",
-      "max_scroll": 500,
-      "min_posts": 100
-    },
-    {
-      "name": "f88",
-      "url": "https://www.facebook.com/f88vietnam",
-      "max_scroll": 500,
-      "min_posts": 100
-    },
-    {
-      "name": "vrb",
-      "url": "https://www.facebook.com/VRB2006/",
-      "max_scroll": 500,
-      "min_posts": 100,
-      "rescan": true
-    },
-    {
-      "name": "vnpay",
-      "url": "https://www.facebook.com/VNPAY.Jsc",
-      "max_scroll": 500,
-      "min_posts": 100,
-      "rescan": true
     }
   ]
 }

@@ -414,8 +414,10 @@ def main():
                       help='Resume crawling from last point (skip already crawled posts)')
     parser.add_argument('--rescan', action='store_true',
                       help='Rescan only empty folders without crawling new posts')
-    parser.add_argument('--use-ytdl', action='store_true',
-                      help='Use yt-dlp for video downloads (default: False)')
+    parser.add_argument('--use-ytdl', action='store_true', default=True,
+                      help='Use yt-dlp for video downloads (default: True)')
+    parser.add_argument('--no-ytdl', action='store_false', dest='use_ytdl',
+                      help='Disable yt-dlp for video downloads')
     parser.add_argument('--browsers', type=int, default=2,
                       help='Number of parallel browsers to use (default: 2)')
     parser.add_argument('--config', type=str, help='Path to pages config JSON file')

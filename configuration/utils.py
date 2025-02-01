@@ -19,6 +19,7 @@ import re
 import time
 import random
 from functools import wraps
+import yt_dlp
 
 # Add new utility functions at the top
 class TimeoutManager:
@@ -33,7 +34,7 @@ class TimeoutManager:
         return self
         
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if exc_type is TimeoutException:
+        if (exc_type is TimeoutException or exc_type is TimeoutError):
             elapsed = time.time() - self.start_time
             print(f"⚠️ {self.operation_name} timed out after {elapsed:.1f}s")
             return True
@@ -315,7 +316,7 @@ def process_desktop_content(browser, folder, is_video=False):
         browser.execute_script(f"window.scrollTo(0, {original_position});")
 
 @retry_on_failure(retries=3)
-def process_mobile_video(browser_mobile, url, folder):
+def process_mobile_video(browser_mobile, url, folder, use_ytdl=True):
     """Process mobile-only content (video download and comments)"""
     print("\n→ Processing mobile content...")
     try:
@@ -328,7 +329,24 @@ def process_mobile_video(browser_mobile, url, folder):
         if not wait_for_mobile_video_load(browser_mobile):
             print("⚠️ Video failed to load")
             return False
+        
+        # Try yt-dlp first if enabled
+        if use_ytdl:
+            video_path = os.path.join(folder, "videos", "video_1.mp4")
+            os.makedirs(os.path.dirname(video_path), exist_ok=True)
+            if download_with_ytdl(url, video_path):
+                # Try to get comments even if video download succeeded
+                try:
+                    comments = get_comments_mobile(browser_mobile)
+                    if comments:
+                        save_text(comments, f"{folder}/comments.txt")
+                        print("✓ Comments saved")
+                except Exception as e:
+                    print(f"⚠️ Could not get comments: {e}")
+                return True
+            print("⚠️ yt-dlp failed, falling back to default method")
             
+        # Fallback to default method
         video_urls = get_video_urls(browser_mobile)
         if video_urls:
             download_videos(video_urls, folder)
@@ -1393,15 +1411,7 @@ def process_post(browser, browser_mobile, url, folder, page_username=None, use_y
         return False
 
 def get_post_links(driver, fanpage_url, max_scroll=1000, min_posts=100):
-    """
-    Crawls Facebook page posts with improved visibility and scrolling.
-    
-    Args:
-        driver: Selenium WebDriver instance
-        fanpage_url: Facebook page URL to crawl
-        max_scroll: Maximum number of scrolls (default: 1000)
-        min_posts: Minimum number of posts to collect (default: 100)
-    """
+    """Enhanced post crawler with multiple selector strategies"""
     post_urls = []
     scroll_count = 0
     last_height = 0
@@ -1414,35 +1424,62 @@ def get_post_links(driver, fanpage_url, max_scroll=1000, min_posts=100):
     
     try:
         driver.get(fanpage_url)
-        sleep(3)  # Initial load
+        sleep(3)
         
         # Adjust zoom to see more content
         driver.execute_script("document.body.style.zoom = '50%'")
         sleep(1)
         
+        # Define all possible selectors
+        selectors = [
+            # New selectors
+            "//div[@id=':r3dc:']//a[@role='link']",  # Direct post links
+            "(//div[@class='html-div xdj266r x11i5rnm xat24cr x1mh8g0r xexx8yu x4uap5 x18d9i69 xkhd6sd'])",  # Post containers
+            # Original selectors
+            "a[href*='/posts/']",
+            "a[href*='/videos/']", 
+            "a[href*='/reel/']"
+        ]
+        
         while scroll_count < max_scroll and no_new_content_count < 3:
             try:
-                # Check for manual stop
                 if keyboard.is_pressed("enter"):
                     print("\n⚠️ Manual interrupt detected")
                     break
                 
-                # Get current post count
                 prev_count = len(post_urls)
                 
-                # Collect visible post links
-                elements = driver.find_elements(
-                    By.CSS_SELECTOR, 
-                    "a[href*='/posts/'], a[href*='/videos/'], a[href*='/reel/']"
-                )
+                # Try each selector strategy
+                for selector in selectors:
+                    try:
+                        if selector.startswith("//"):  # XPath selector
+                            elements = driver.find_elements(By.XPATH, selector)
+                        else:  # CSS selector
+                            elements = driver.find_elements(By.CSS_SELECTOR, selector)
+                            
+                        for element in elements:
+                            try:
+                                # For post containers, find the link within
+                                if "xdj266r" in selector:
+                                    links = element.find_elements(
+                                        By.XPATH,
+                                        ".//a[contains(@href, '/posts/') or contains(@href, '/videos/') or contains(@href, '/reel/')]"
+                                    )
+                                    for link in links:
+                                        url = link.get_attribute("href")
+                                        if validate_post_url(url, page_username, post_urls):
+                                            post_urls.append(url)
+                                else:
+                                    # Direct link elements
+                                    url = element.get_attribute("href")
+                                    if validate_post_url(url, page_username, post_urls):
+                                        post_urls.append(url)
+                            except:
+                                continue
+                    except:
+                        continue
                 
-                # Add valid URLs
-                for element in elements:
-                    url = element.get_attribute("href")
-                    if url and url not in post_urls and page_username in url:
-                        post_urls.append(url)
-                
-                # Smart scrolling
+                # Smart scrolling logic
                 current_height = driver.execute_script("return document.documentElement.scrollHeight")
                 if current_height == last_height:
                     no_new_content_count += 1
@@ -1450,19 +1487,23 @@ def get_post_links(driver, fanpage_url, max_scroll=1000, min_posts=100):
                     no_new_content_count = 0
                     last_height = current_height
                 
-                # Scroll with randomization
-                scroll_amount = random.randint(300, 1000)  # Varied scroll distance
-                driver.execute_script(f"window.scrollBy(0, {scroll_amount});")
-                sleep(random.uniform(0.5, 1.0))  # Random delay
+                # Random scroll with momentum
+                scroll_amount = random.randint(300, 1000)
+                driver.execute_script(f"""
+                    window.scrollBy({{
+                        top: {scroll_amount},
+                        behavior: 'smooth'
+                    }});
+                """)
+                smart_delay(0.5, 1)
                 
-                # Progress update
+                # Progress updates
                 scroll_count += 1
                 if scroll_count % 10 == 0:
                     new_posts = len(post_urls) - prev_count
-                    print(f"\rScrolls: {scroll_count}, Posts: {len(post_urls)}, "
-                          f"New: +{new_posts}", end="")
+                    print(f"\rScrolls: {scroll_count}, Posts: {len(post_urls)}, New: +{new_posts}", end="")
                     
-                    # Page refresh if stuck
+                    # Refresh page if stuck
                     if scroll_count % 200 == 0:
                         print("\n↻ Refreshing page...")
                         driver.refresh()
@@ -1470,20 +1511,19 @@ def get_post_links(driver, fanpage_url, max_scroll=1000, min_posts=100):
                         driver.execute_script("document.body.style.zoom = '50%'")
                         sleep(1)
                 
-                # Check if we have enough posts
                 if len(post_urls) >= min_posts:
                     print(f"\n✓ Minimum post target ({min_posts}) reached")
                     break
                 
             except Exception as e:
                 print(f"\n⚠️ Scroll error: {e}")
-                sleep(2)
+                smart_delay(1, 2)
                 continue
         
         # Reset zoom
         driver.execute_script("document.body.style.zoom = '100%'")
         
-        # Remove duplicates and validate
+        # Final cleanup and validation
         final_urls = remove_duplicate_links(post_urls)
         print(f"\n=== Crawl Complete ===")
         print(f"Posts found: {len(final_urls)}")
@@ -1492,6 +1532,28 @@ def get_post_links(driver, fanpage_url, max_scroll=1000, min_posts=100):
     except Exception as e:
         print(f"\n❌ Critical error: {e}")
         return remove_duplicate_links(post_urls)
+
+def validate_post_url(url, page_username, existing_urls):
+    """Validate a post URL"""
+    if not url:
+        return False
+    
+    # Basic validation
+    if url in existing_urls:
+        return False
+    
+    if not page_username in url:
+        return False
+    
+    # Check for valid post patterns
+    valid_patterns = ['/posts/', '/videos/', '/reel/', '/photos/']
+    if not any(pattern in url for pattern in valid_patterns):
+        return False
+    
+    # Clean the URL
+    url = url.split('?')[0].rstrip('/')
+    
+    return True
 
 def remove_duplicate_links(links):
     """Remove duplicate links and validate page-specific links"""
@@ -1534,3 +1596,45 @@ def remove_duplicate_links(links):
     except Exception as e:
         print(f"Error removing duplicates: {e}")
         return list(set(links))  # Fallback to simple deduplication
+
+def download_with_ytdl(url, output_path):
+    """Download video using yt-dlp with consistent naming"""
+    try:
+        print("  → Downloading with yt-dlp...")
+        # Create a temporary file path with yt-dlp's default naming
+        temp_dir = os.path.dirname(output_path)
+        temp_path = os.path.join(temp_dir, '%(title)s.%(ext)s')
+        
+        ydl_opts = {
+            'format': 'best',
+            'outtmpl': temp_path,
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': False,
+            'ignoreerrors': True
+        }
+        
+        # Download the video
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+            
+        # Find the downloaded file and rename it
+        downloaded_files = [f for f in os.listdir(temp_dir) if os.path.isfile(os.path.join(temp_dir, f))]
+        video_files = [f for f in downloaded_files if f.endswith(('.mp4', '.mkv', '.webm'))]
+        
+        if video_files:
+            # Get the latest downloaded video file
+            latest_video = max([os.path.join(temp_dir, f) for f in video_files], 
+                             key=os.path.getctime)
+            
+            # Rename to desired format
+            os.replace(latest_video, output_path)
+            print("  ✓ Download completed and file renamed successfully")
+            return True
+        else:
+            print("  ❌ No video file found after download")
+            return False
+            
+    except Exception as e:
+        print(f"  ❌ yt-dlp download failed: {str(e)}")
+        return False
