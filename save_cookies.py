@@ -33,6 +33,10 @@ def save_facebook_cookies(driver_path="./chromedriver.exe"):
         # Wait for login to complete
         sleep(20)
         
+        # Check if login was successful by looking for a specific element
+        if "Facebook" not in browser.title:
+            raise Exception("Login failed, please check your credentials or 2FA settings.")
+        
         # Save cookies
         cookies_file = "my_cookies.pkl"
         pickle.dump(browser.get_cookies(), open(cookies_file, "wb"))

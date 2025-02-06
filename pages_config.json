@@ -1,16 +1,19 @@
 {
   "pages": [
     {
-      "name": "tpxanhecopark",
-      "url": "https://www.facebook.com/ecopark.com.vn",
-      "max_scroll": 750,
-      "min_posts": 100
+      "name": "sungroup",
+      "url": "https://www.facebook.com/tapdoanmattroi",
+      "min_posts": 150
     },
     {
-      "name": "vingroup",
-      "url": "https://www.facebook.com/vingroup.net",
-      "max_scroll": 750,
-      "min_posts": 100
+      "name": "keppelland",
+      "url": "https://www.facebook.com/keppellandvietnam.infiniti",
+      "min_posts": 150
+    },
+    {
+      "name": "CapitaLand",
+      "url": "https://www.facebook.com/@CapitaLandVietnam",
+      "min_posts": 150
     }
   ]
 }

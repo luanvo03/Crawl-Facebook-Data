@@ -1337,7 +1337,12 @@ def is_valid_facebook_post(url, page_username=None):
     if not url:
         return False
         
-    # First check if URL matches the page
+    # Special handling for watch URLs
+    if '/watch/' in url:
+        # For watch URLs, we don't check page_username since they redirect to a generic watch page
+        return True
+        
+    # First check if URL matches the page (skip for watch URLs)
     if page_username and page_username not in url:
         return False
     
@@ -1363,8 +1368,16 @@ def process_post(browser, browser_mobile, url, folder, page_username=None, use_y
         browser.get(url)
         smart_delay(2, 3)
         
-        # Get current URL and check if it's a valid Facebook post
+        # Get current URL and check for video content first
         current_url = browser.current_url
+        
+        # Special handling for watch URLs
+        if '/watch/' in current_url:
+            print("✓ Detected Facebook Watch URL")
+            print("→ Processing as video content...")
+            return process_video_post(browser, browser_mobile, current_url, folder, use_ytdl)
+            
+        # Regular URL validation
         if not is_valid_facebook_post(current_url, page_username):
             print("❌ Invalid post URL after redirect")
             print(f"  Redirected to: {current_url}")
@@ -1385,7 +1398,31 @@ def process_post(browser, browser_mobile, url, folder, page_username=None, use_y
         except TimeoutException:
             print("→ No video content found")
             pass
-            
+        
+        # Check if the post contains text content
+        try:
+            print("→ Checking for text content...")
+            text_element = WebDriverWait(browser, 5).until(
+                EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'userContent')]"))
+            )
+            if text_element.text.strip():
+                print("✓ Text content detected")
+            else:
+                print("⚠️ Text content is empty")
+        except TimeoutException:
+            print("→ No text content found")
+        
+        # Check if the post contains image content
+        try:
+            print("→ Checking for image content...")
+            image_elements = browser.find_elements(By.XPATH, "//img[contains(@class, 'scaledImageFitWidth')]")
+            if image_elements:
+                print(f"✓ Image content detected: {len(image_elements)} images")
+            else:
+                print("⚠️ No image content found")
+        except TimeoutException:
+            print("→ No image content found")
+        
         # Process based on URL type
         if "videos" in url or "reel" in url:
             print("→ URL indicates video/reel content")
@@ -1413,7 +1450,7 @@ def process_post(browser, browser_mobile, url, folder, page_username=None, use_y
 def get_post_links(driver, fanpage_url, max_scroll=1000, min_posts=100):
     """Enhanced post crawler with multiple selector strategies"""
     post_urls = []
-    scroll_count = 0
+    scroll_count = 0 
     last_height = 0
     no_new_content_count = 0
     page_username = fanpage_url.rstrip('/').split('/')[-1]
@@ -1441,7 +1478,8 @@ def get_post_links(driver, fanpage_url, max_scroll=1000, min_posts=100):
             "a[href*='/reel/']"
         ]
         
-        while scroll_count < max_scroll and no_new_content_count < 3:
+        # Continue scrolling until we have enough posts or can't find more
+        while True:
             try:
                 if keyboard.is_pressed("enter"):
                     print("\n⚠️ Manual interrupt detected")
@@ -1452,13 +1490,14 @@ def get_post_links(driver, fanpage_url, max_scroll=1000, min_posts=100):
                 # Try each selector strategy
                 for selector in selectors:
                     try:
-                        if selector.startswith("//"):  # XPath selector
+                        if selector.startswith("//"):
                             elements = driver.find_elements(By.XPATH, selector)
-                        else:  # CSS selector
+                        else:
                             elements = driver.find_elements(By.CSS_SELECTOR, selector)
                             
                         for element in elements:
                             try:
+                                # Process links...
                                 # For post containers, find the link within
                                 if "xdj266r" in selector:
                                     links = element.find_elements(
@@ -1483,6 +1522,9 @@ def get_post_links(driver, fanpage_url, max_scroll=1000, min_posts=100):
                 current_height = driver.execute_script("return document.documentElement.scrollHeight")
                 if current_height == last_height:
                     no_new_content_count += 1
+                    if no_new_content_count >= 3:  # Try 3 times before giving up
+                        print("\n⚠️ Reached end of page or no new content")
+                        break
                 else:
                     no_new_content_count = 0
                     last_height = current_height
@@ -1510,9 +1552,16 @@ def get_post_links(driver, fanpage_url, max_scroll=1000, min_posts=100):
                         sleep(3)
                         driver.execute_script("document.body.style.zoom = '50%'")
                         sleep(1)
+                        no_new_content_count = 0  # Reset counter after refresh
                 
+                # Check if we have enough posts
                 if len(post_urls) >= min_posts:
-                    print(f"\n✓ Minimum post target ({min_posts}) reached")
+                    print(f"\n✓ Reached minimum post target ({min_posts})")
+                    break
+                
+                # Only check max_scroll if it's set (non-zero)
+                if max_scroll > 0 and scroll_count >= max_scroll:
+                    print(f"\n⚠️ Reached maximum scroll limit ({max_scroll})")
                     break
                 
             except Exception as e:
@@ -1526,7 +1575,7 @@ def get_post_links(driver, fanpage_url, max_scroll=1000, min_posts=100):
         # Final cleanup and validation
         final_urls = remove_duplicate_links(post_urls)
         print(f"\n=== Crawl Complete ===")
-        print(f"Posts found: {len(final_urls)}")
+        print(f"Posts found: {len(final_urls)} / {min_posts} target")
         return final_urls
         
     except Exception as e:
@@ -1597,11 +1646,76 @@ def remove_duplicate_links(links):
         print(f"Error removing duplicates: {e}")
         return list(set(links))  # Fallback to simple deduplication
 
+def wait_for_mobile_video_load(driver, timeout=15):
+    """Wait for mobile video player to load and be ready"""
+    print("  → Waiting for mobile video player...")
+    try:
+        # First wait for video container
+        WebDriverWait(driver, timeout).until(
+            EC.presence_of_element_located((
+                By.XPATH, 
+                "//div[contains(@class, 'native-video-player')] | //video"
+            ))
+        )
+        
+        # Then wait for either video element or play button
+        video_loaded = False
+        start_time = time.time()
+        
+        while not video_loaded and time.time() - start_time < timeout:
+            try:
+                # Check for direct video element
+                video = driver.find_element(By.XPATH, "//video[@src]")
+                if video.get_attribute("src"):
+                    print("  ✓ Video source found")
+                    video_loaded = True
+                    break
+            except:
+                # Check for play button as fallback
+                try:
+                    play_button = driver.find_element(
+                        By.XPATH, 
+                        "//div[contains(@class, 'play-button')] | //div[contains(@aria-label, 'Play')]"
+                    )
+                    if play_button.is_displayed():
+                        try:
+                            play_button.click()
+                            smart_delay(1, 2)
+                        except:
+                            pass
+                except:
+                    smart_delay(0.5, 1)
+                    continue
+        
+        if video_loaded:
+            print("  ✓ Video player ready")
+            return True
+        else:
+            print("  ⚠️ Video player not fully loaded")
+            return False
+            
+    except TimeoutException:
+        print("  ❌ Timeout waiting for video player")
+        return False
+    except Exception as e:
+        print(f"  ❌ Error checking video: {e}")
+        return False
+
 def download_with_ytdl(url, output_path):
     """Download video using yt-dlp with consistent naming"""
     try:
         print("  → Downloading with yt-dlp...")
-        # Create a temporary file path with yt-dlp's default naming
+        # Format URL for Facebook video download
+        if '/videos/' in url:
+            video_id = url.split('/videos/')[-1].split('/')[0]
+            url = f"https://www.facebook.com/watch/?v={video_id}"
+        elif '/watch/' in url:
+            if 'v=' not in url:
+                video_id = url.split('/watch/')[-1].split('/')[0]
+                url = f"https://www.facebook.com/watch/?v={video_id}"
+        print(f"  → Using URL: {url}")
+        
+        # Create a temporary file path
         temp_dir = os.path.dirname(output_path)
         temp_path = os.path.join(temp_dir, '%(title)s.%(ext)s')
         
@@ -1618,7 +1732,7 @@ def download_with_ytdl(url, output_path):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
             
-        # Find the downloaded file and rename it
+        # Find and rename the downloaded file
         downloaded_files = [f for f in os.listdir(temp_dir) if os.path.isfile(os.path.join(temp_dir, f))]
         video_files = [f for f in downloaded_files if f.endswith(('.mp4', '.mkv', '.webm'))]
         

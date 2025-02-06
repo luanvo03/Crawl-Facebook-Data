@@ -147,7 +147,10 @@ def crawl(driver_path, cookies_path, page_link, page_name, headless=True,
                 folder = f"data/{page_name}/{id}"
                 if not os.path.exists(folder):
                     os.makedirs(folder)
-                cf.process_post(browser, browser_mobile, url, folder, use_ytdl)
+                success = cf.process_post(browser, browser_mobile, url, folder, use_ytdl)
+                
+                if not success:
+                    print(f"⚠️ Post {id} has no content or failed to process")
                 
             except Exception as e:
                 print(f"Error processing post {url}: {e}")
