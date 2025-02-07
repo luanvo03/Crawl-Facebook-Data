@@ -1,5 +1,8 @@
 selenium
-bs4
+selenium-stealth
 requests
+beautifulsoup4
 keyboard
 tqdm
+python-dotenv
+yt-dlp

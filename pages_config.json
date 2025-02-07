@@ -1,0 +1,19 @@
+{
+  "pages": [
+    {
+      "name": "sungroup",
+      "url": "https://www.facebook.com/tapdoanmattroi",
+      "min_posts": 150
+    },
+    {
+      "name": "keppelland",
+      "url": "https://www.facebook.com/keppellandvietnam.infiniti",
+      "min_posts": 150
+    },
+    {
+      "name": "CapitaLand",
+      "url": "https://www.facebook.com/@CapitaLandVietnam",
+      "min_posts": 150
+    }
+  ]
+}
